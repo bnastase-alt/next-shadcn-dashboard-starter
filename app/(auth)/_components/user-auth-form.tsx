@@ -160,7 +160,7 @@ export default function UserAuthForm({ onToggle }: UserAuthFormProps) {
   const form = useForm<UserFormValue>({
     resolver: zodResolver(isSignUp ? signUpSchema : signInSchema),
     defaultValues: {
-      email: 'demo@gmail.com',
+      email: '',
       password: '',
       firstName: '',
       lastName: '',
