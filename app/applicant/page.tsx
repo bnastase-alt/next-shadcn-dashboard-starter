@@ -397,7 +397,7 @@ export default function RecruitmentForm() {
   }
 
   return (
-    <div className="container mx-auto max-w-4xl px-4 py-6 md:px-6">
+    <div className="mx-auto min-h-screen w-[75vw] overflow-y-auto py-8">
       <Card className="w-full">
         <CardHeader>
           <CardTitle>Rider Recruitment Process</CardTitle>
