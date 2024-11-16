@@ -1,31 +1,25 @@
-import AppSidebar from '@/components/layout/app-sidebar';
-import Header from '@/components/layout/header';
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
-import type { Metadata } from 'next';
+import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
-export const metadata: Metadata = {
-  title: 'Next Shadcn Dashboard Starter',
-  description: 'Basic dashboard with Next.js and Shadcn'
-};
-
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children
 }: {
   children: React.ReactNode;
 }) {
-  // Persisting the sidebar state in the cookie.
-  const cookieStore = cookies();
-  const defaultOpen = cookieStore.get('sidebar:state')?.value === 'true';
-  return (
-    <SidebarProvider defaultOpen={defaultOpen}>
-      <AppSidebar />
-      <SidebarInset>
-        <Header />
-        {/* page main content */}
-        {children}
-        {/* page main content ends */}
-      </SidebarInset>
-    </SidebarProvider>
-  );
+  console.log('🟡 [DashboardLayout] Checking session');
+  const supabase = createServerComponentClient({ cookies });
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+
+  console.log('🟡 [DashboardLayout] Session check result:', !!session);
+
+  if (!session) {
+    console.log('🔴 [DashboardLayout] No session, redirecting');
+    redirect('/');
+  }
+
+  console.log('🟢 [DashboardLayout] Session valid, rendering');
+  return <>{children}</>;
 }

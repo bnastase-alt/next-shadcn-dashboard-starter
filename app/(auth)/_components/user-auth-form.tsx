@@ -20,6 +20,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import ReCAPTCHA from 'react-google-recaptcha';
 import { useRef } from 'react';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 
 const signInSchema = z.object({
   email: z.string().email({ message: 'Enter a valid email address' }),
@@ -61,32 +62,55 @@ const useAuthHandlers = (
   router: ReturnType<typeof useRouter>
 ) => {
   const handleSignIn = async (data: UserFormValue) => {
-    console.log('🔵 Attempting sign in with:', { email: data.email });
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: data.email,
-      password: data.password
-    });
+    try {
+      console.log('🔵 [SignIn] Starting with:', { email: data.email });
 
-    if (signInError) {
-      console.log('🔴 SignIn Error:', signInError);
+      // 1. Authenticate user
+      const { data: authData, error: signInError } =
+        await supabase.auth.signInWithPassword({
+          email: data.email.trim(),
+          password: data.password
+        });
 
-      if (signInError.status === 429) {
-        toast.error(
-          'Too many login attempts. Please wait a few minutes before trying again.'
-        );
-      } else if (signInError.message === 'Invalid login credentials') {
-        toast.error(
-          'Invalid email or password. Please try again or create an account.'
-        );
-      } else {
+      if (signInError) {
+        console.error('🔴 [SignIn] Error:', signInError);
         toast.error(signInError.message);
+        return;
       }
-      throw signInError;
-    }
 
-    console.log('✅ Sign in successful');
-    toast.success('Successfully logged in');
-    router.push('/dashboard');
+      if (authData?.user) {
+        console.log('✅ [SignIn] Auth successful, checking user type');
+
+        // 2. Get user's type from profile
+        const { data: profile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('user_type')
+          .eq('id', authData.user.id)
+          .single();
+
+        if (profileError) {
+          console.error('🔴 [SignIn] Profile fetch error:', profileError);
+          toast.error('Failed to fetch user profile');
+          return;
+        }
+
+        console.log('✅ [SignIn] User type found:', profile.user_type);
+        toast.success('Successfully logged in');
+
+        // Updated routing logic
+        if (
+          profile.user_type === 'admin' ||
+          profile.user_type === 'recruiter'
+        ) {
+          router.push('/dashboard/overview');
+        } else {
+          router.push('/applicant');
+        }
+      }
+    } catch (error) {
+      console.error('🔴 [SignIn] Unexpected error:', error);
+      toast.error('An unexpected error occurred');
+    }
   };
 
   // Add type guard to check if it's a signup form data
@@ -156,12 +180,18 @@ export default function UserAuthForm({ onToggle }: UserAuthFormProps) {
   const [loading, startTransition] = useTransition();
   const [isSignUp, setIsSignUp] = useState(false);
   const recaptchaRef = useRef<ReCAPTCHA>(null);
+  const skipCaptcha = process.env.NEXT_PUBLIC_SKIP_CAPTCHA === 'true';
+  console.log(
+    '🔵 Skip Captcha:',
+    skipCaptcha,
+    process.env.NEXT_PUBLIC_SKIP_CAPTCHA
+  );
 
   const form = useForm<UserFormValue>({
     resolver: zodResolver(isSignUp ? signUpSchema : signInSchema),
     defaultValues: {
-      email: '',
-      password: '',
+      email: process.env.NEXT_PUBLIC_DEFAULT_USER_EMAIL || '',
+      password: process.env.NEXT_PUBLIC_DEFAULT_USER_PASSWORD || '',
       firstName: '',
       lastName: '',
       confirmPassword: ''
@@ -175,27 +205,34 @@ export default function UserAuthForm({ onToggle }: UserAuthFormProps) {
     console.log('🔵 Form submitted with:', data);
     startTransition(async () => {
       try {
-        const token = recaptchaRef.current?.getValue();
-        console.log('🔵 Captcha token:', token);
+        console.log('🔵 Skip Captcha Status:', skipCaptcha);
 
-        if (!token) {
-          toast.error('Please complete the captcha');
-          return;
-        }
+        // Only verify captcha if not skipped
+        if (!skipCaptcha) {
+          const token = recaptchaRef.current?.getValue();
+          console.log('🔵 Captcha token:', token);
 
-        const verifyResponse = await fetch('/api/verify-captcha', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token })
-        });
+          if (!token) {
+            toast.error('Please complete the captcha');
+            return;
+          }
 
-        const verifyData = await verifyResponse.json();
-        console.log('🔵 Verify response:', verifyData);
+          const verifyResponse = await fetch('/api/verify-captcha', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token })
+          });
 
-        if (!verifyResponse.ok) {
-          toast.error(`Captcha verification failed: ${verifyData.error}`);
-          recaptchaRef.current?.reset();
-          return;
+          const verifyData = await verifyResponse.json();
+          console.log('🔵 Verify response:', verifyData);
+
+          if (!verifyResponse.ok) {
+            toast.error(`Captcha verification failed: ${verifyData.error}`);
+            recaptchaRef.current?.reset();
+            return;
+          }
+        } else {
+          console.log('🔵 Captcha verification skipped');
         }
 
         console.log('🔵 Starting validation...');
@@ -241,104 +278,68 @@ export default function UserAuthForm({ onToggle }: UserAuthFormProps) {
     onToggle?.(!isSignUp);
   };
 
+  // Add this function for direct navigation
+  const handleDevBypass = async () => {
+    console.log('🔵 [DevBypass] Starting authentication...');
+    try {
+      // Create a new supabase client for this request
+      const supabase = createClientComponentClient();
+
+      const { data: authData, error: signInError } =
+        await supabase.auth.signInWithPassword({
+          email: process.env.NEXT_PUBLIC_DEFAULT_USER_EMAIL!,
+          password: process.env.NEXT_PUBLIC_DEFAULT_USER_PASSWORD!
+        });
+
+      console.log('🔵 [DevBypass] Auth attempt result:', {
+        success: !!authData?.session,
+        error: signInError?.message || 'none',
+        user: authData?.user?.id || 'none'
+      });
+
+      if (signInError) {
+        console.error('🔴 [DevBypass] Auth error:', signInError);
+        toast.error('Authentication failed');
+        return;
+      }
+
+      if (authData?.session) {
+        console.log(
+          '✅ [DevBypass] Session created:',
+          authData.session.access_token
+        );
+        toast.success('Authenticated successfully');
+        router.push('/dashboard/overview');
+      } else {
+        console.log('🔴 [DevBypass] No session created');
+        toast.error('No session created');
+      }
+    } catch (error) {
+      console.error('🔴 [DevBypass] Error:', error);
+      toast.error('An unexpected error occurred');
+    }
+  };
+
   return (
-    <Form {...form}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          onSubmit(form.getValues());
-        }}
-        className="w-full space-y-2"
-      >
-        <FormField
-          control={form.control}
-          name="email"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Email</FormLabel>
-              <FormControl>
-                <Input
-                  type="email"
-                  placeholder="Enter your email..."
-                  disabled={loading}
-                  {...field}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {isSignUp && (
-          <>
-            <FormField
-              control={form.control}
-              name="firstName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>First Name</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="Enter your first name..."
-                      disabled={loading}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="lastName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Last Name</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="Enter your last name..."
-                      disabled={loading}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </>
-        )}
-
-        <FormField
-          control={form.control}
-          name="password"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Password</FormLabel>
-              <FormControl>
-                <Input
-                  type="password"
-                  placeholder="Enter your password..."
-                  disabled={loading}
-                  {...field}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {isSignUp && (
+    <div className="grid gap-6">
+      <Form {...form}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit(form.getValues());
+          }}
+          className="w-full space-y-2"
+        >
           <FormField
             control={form.control}
-            name="confirmPassword"
+            name="email"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Confirm Password</FormLabel>
+                <FormLabel>Email</FormLabel>
                 <FormControl>
                   <Input
-                    type="password"
-                    placeholder="Confirm your password..."
+                    type="email"
+                    placeholder="Enter your email..."
                     disabled={loading}
                     {...field}
                   />
@@ -347,37 +348,133 @@ export default function UserAuthForm({ onToggle }: UserAuthFormProps) {
               </FormItem>
             )}
           />
-        )}
 
-        <div className="my-4 flex justify-center">
-          <ReCAPTCHA
-            ref={recaptchaRef}
-            sitekey={process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY!}
-            theme="dark"
-            className="scale-90 transform"
+          {isSignUp && (
+            <>
+              <FormField
+                control={form.control}
+                name="firstName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>First Name</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Enter your first name..."
+                        disabled={loading}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="lastName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Last Name</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Enter your last name..."
+                        disabled={loading}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </>
+          )}
+
+          <FormField
+            control={form.control}
+            name="password"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Password</FormLabel>
+                <FormControl>
+                  <Input
+                    type="password"
+                    placeholder="Enter your password..."
+                    disabled={loading}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
           />
-        </div>
 
-        <Button
-          disabled={loading || (!isSignUp && !isFormComplete)}
-          className="ml-auto w-full"
-          type="submit"
-        >
-          {isSignUp ? 'Create Account' : 'Sign In'}
-        </Button>
+          {isSignUp && (
+            <FormField
+              control={form.control}
+              name="confirmPassword"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Confirm Password</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="password"
+                      placeholder="Confirm your password..."
+                      disabled={loading}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
 
-        <div className="text-center text-sm">
-          <button
-            type="button"
-            onClick={handleToggle}
-            className="text-muted-foreground hover:underline"
+          <Button
+            disabled={loading || (!isSignUp && !isFormComplete)}
+            className="ml-auto w-full"
+            type="submit"
           >
-            {isSignUp
-              ? 'Already have an account? Sign in'
-              : "Don't have an account? Create one"}
-          </button>
-        </div>
-      </form>
-    </Form>
+            {isSignUp ? 'Create Account' : 'Sign In'}
+          </Button>
+
+          <div className="text-center text-sm">
+            <button
+              type="button"
+              onClick={handleToggle}
+              className="text-muted-foreground hover:underline"
+            >
+              {isSignUp
+                ? 'Already have an account? Sign in'
+                : "Don't have an account? Create one"}
+            </button>
+          </div>
+        </form>
+      </Form>
+
+      {/* Add development bypass button */}
+      {process.env.NODE_ENV === 'development' && (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleDevBypass}
+          className="bg-yellow-500/10 hover:bg-yellow-500/20"
+        >
+          [DEV] Skip to Dashboard
+        </Button>
+      )}
+
+      <div className="text-xs text-muted-foreground">
+        Skip Captcha: {String(skipCaptcha)}
+      </div>
+
+      {!skipCaptcha && (
+        <ReCAPTCHA
+          ref={recaptchaRef}
+          sitekey={process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || ''}
+          theme="dark"
+          className="scale-90 transform"
+        />
+      )}
+    </div>
   );
 }
